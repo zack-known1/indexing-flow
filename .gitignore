@@ -1,0 +1,79 @@
+# ---- Secrets: never commit ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+service-account*.json
+gcp-credentials*.json
+
+# ---- Dependencies ----
+node_modules/
+.pnpm-store/
+.npm/
+
+# ---- Build output ----
+dist/
+build/
+*.tsbuildinfo
+
+# ---- Runtime / uploads / temp ----
+tmp/
+uploads/
+storage/
+exports/
+logs/
+*.log
+npm-debug.log*
+pids/
+*.pid
+
+# ---- Test / coverage ----
+coverage/
+.nyc_output/
+.vitest/
+
+# ---- Prisma ----
+prisma/*.db
+prisma/*.db-journal
+
+# ---- Editors / OS ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Platform ----
+.vercel
+.railway
+.render
+.replit_cache/
+.config/
+.upm/
+
+.env
+.env.*
+!.env.example
+
+node_modules/
+dist/
+build/
+coverage/
+.next/
+.vite/
+*.log
+.DS_Store
+Thumbs.db
+
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+build/
+coverage/
+.next/
+.vite/
+*.log

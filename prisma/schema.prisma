@@ -1,0 +1,1290 @@
+// =============================================================================
+// IndexFlow — Prisma schema
+// =============================================================================
+// Design rules enforced here:
+//
+//  1. TENANT ISOLATION. Every tenant-scoped row carries `workspaceId`. There is
+//     no table a query can reach that does not let the caller filter by
+//     workspace. Application code NEVER queries a tenant table without a
+//     workspaceId in the WHERE clause (see src/lib/tenantGuard.ts).
+//
+//  2. IMMUTABLE LEDGER. `credit_ledger` is append-only. It has no updatedAt and
+//     the application layer never issues UPDATE or DELETE against it. A database
+//     trigger in prisma/post-migrate.sql enforces this at the storage layer so
+//     even a bug or a direct psql session cannot rewrite financial history.
+//
+//  3. IDEMPOTENCY BY CONSTRAINT, not by check-then-act. Credit movements,
+//     payment orders and webhook deliveries all carry a unique key so a
+//     duplicate is rejected by Postgres rather than by a race-prone read.
+//
+//  4. HONEST STATUS. Submission state and index state are SEPARATE columns.
+//     A URL that was accepted by an API is SUBMITTED. Only a real verdict from
+//     the Search Console URL Inspection API can set an index status, and
+//     `UNKNOWN` is a first-class value we display rather than guessing.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+/// Platform-level (not workspace-level) privileges.
+enum PlatformRole {
+  USER
+  SUPPORT_ADMIN /// Read-only admin panel + credit adjustments
+  SUPER_ADMIN /// Full admin panel including pricing and suspension
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_DELETION
+  DELETED
+}
+
+/// Workspace membership roles. Permission matrix lives in src/config/permissions.ts
+/// and is enforced server-side on every route — never in the template layer.
+enum WorkspaceRole {
+  OWNER /// Billing, deletion, ownership transfer. Exactly one per workspace.
+  ADMIN /// Everything except billing-destructive and workspace deletion
+  MEMBER /// Submit URLs, run jobs, spend credits
+  VIEWER /// Read-only. Cannot spend a single credit.
+}
+
+enum WorkspaceStatus {
+  ACTIVE
+  SUSPENDED /// Set by platform admin for abuse. Blocks all job creation.
+  PENDING_DELETION
+}
+
+enum OAuthProvider {
+  GOOGLE
+}
+
+/// Why an OAuth connection is not usable, so the UI can tell the user exactly
+/// what to do instead of showing a generic failure.
+enum ConnectionStatus {
+  ACTIVE
+  REVOKED /// User revoked access in their Google account settings
+  EXPIRED /// Refresh token rejected; re-consent required
+  INVALID_GRANT
+  DISCONNECTED /// Removed by the customer from inside IndexFlow
+}
+
+enum PropertyType {
+  DOMAIN /// sc-domain:example.com
+  URL_PREFIX /// https://example.com/
+}
+
+/// Mirrors the permissionLevel returned by Search Console sites.list.
+/// We only allow write operations for OWNER and FULL_USER.
+enum PropertyPermission {
+  SITE_OWNER
+  SITE_FULL_USER
+  SITE_RESTRICTED_USER
+  SITE_UNVERIFIED_USER
+  PERMISSION_UNSPECIFIED
+}
+
+/// Which Google workflow a URL is eligible for.
+/// Google's Indexing API officially accepts ONLY JobPosting and BroadcastEvent
+/// pages. GENERIC URLs are handled through sitemap submission plus URL
+/// Inspection status reads. We never call the Indexing API for GENERIC URLs.
+enum ContentType {
+  GENERIC
+  JOB_POSTING
+  BROADCAST_EVENT
+}
+
+enum JobType {
+  PRECHECK /// Safe crawlability check of the customer's own URL
+  SUBMIT /// Sitemap submission, or Indexing API for eligible content types
+  STATUS_CHECK /// URL Inspection API read
+}
+
+/// Canonical job state machine. Transitions are validated in
+/// src/services/job/stateMachine.ts — illegal transitions throw.
+enum JobState {
+  QUEUED
+  VALIDATING
+  SUBMITTING
+  SUBMITTED
+  CHECKING
+  INDEXED
+  NOT_INDEXED
+  ERROR
+  QUOTA_LIMITED
+  RETRY_WAIT
+  CANCELLED
+}
+
+/// Independent of index status. Answers "did an API accept this URL?"
+enum SubmissionStatus {
+  NOT_SUBMITTED
+  PENDING
+  SUBMITTED /// An API returned success
+  NOT_ELIGIBLE /// e.g. Indexing API requested for a GENERIC URL
+  FAILED
+}
+
+/// Only ever written from a real URL Inspection API verdict.
+/// UNKNOWN is displayed as "Status unavailable" — we never guess INDEXED.
+enum IndexStatus {
+  UNKNOWN
+  INDEXED
+  NOT_INDEXED
+  CRAWLED_NOT_INDEXED
+  DISCOVERED_NOT_INDEXED
+  EXCLUDED_BY_NOINDEX
+  EXCLUDED_BY_ROBOTS
+  BLOCKED_BY_CANONICAL
+  FETCH_ERROR
+  NEUTRAL
+}
+
+/// Ledger movement types. RESERVE / RESERVE_RELEASE record the movement between
+/// the available and reserved buckets so the two balances are always
+/// reconstructable by replaying the ledger.
+enum CreditTxnType {
+  PURCHASE /// Verified payment settled
+  BONUS /// Signup grant or promo from admin
+  RESERVE /// available -> reserved
+  DEBIT /// reserved -> consumed (work actually happened)
+  REFUND /// reserved -> available (job failed for a non-billable reason)
+  RESERVE_RELEASE /// reserved -> available (job cancelled before work started)
+  ADMIN_ADJUSTMENT
+  EXPIRATION
+}
+
+enum PaymentStatus {
+  CREATED /// Order created, customer has not paid
+  PENDING /// Provider is processing
+  PAID /// Signature-verified webhook confirmed settlement
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+  CANCELLED
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSED
+  DUPLICATE /// Replay of an event we already applied — recorded, not applied
+  INVALID_SIGNATURE
+  FAILED
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELLED
+  EXPIRED
+  PAUSED
+}
+
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+  ROTATING /// Superseded by a newer key but honored until graceRevokeAt
+}
+
+enum AuthTokenType {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+  WORKSPACE_INVITE
+}
+
+enum NotificationChannel {
+  IN_APP
+  EMAIL
+}
+
+enum NotificationKind {
+  WELCOME
+  EMAIL_VERIFICATION
+  PAYMENT_SUCCEEDED
+  PAYMENT_FAILED
+  CREDITS_LOW
+  CREDITS_EXHAUSTED
+  BATCH_COMPLETED
+  BATCH_FAILED
+  PROPERTY_DISCONNECTED
+  QUOTA_LIMITED
+  SECURITY_ALERT
+}
+
+enum BatchSource {
+  MANUAL
+  BULK_PASTE
+  CSV_UPLOAD
+  TXT_UPLOAD
+  SITEMAP
+  API
+}
+
+enum BatchStatus {
+  PENDING
+  IMPORTING
+  READY
+  PROCESSING
+  COMPLETED
+  PARTIALLY_COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// =============================================================================
+// IDENTITY
+// =============================================================================
+
+model User {
+  id    String @id @default(uuid()) @db.Uuid
+  email String @unique @db.VarChar(320)
+
+  /// Normalized lowercase form used for lookups so Foo@x.com and foo@x.com
+  /// cannot become two accounts.
+  emailNormalized String @unique @map("email_normalized") @db.VarChar(320)
+
+  /// scrypt hash, format: scrypt$N$r$p$salt$hash. Null for OAuth-only accounts,
+  /// which must set a password before they can use password login.
+  passwordHash String? @map("password_hash") @db.VarChar(512)
+
+  name      String? @db.VarChar(160)
+  avatarUrl String? @map("avatar_url") @db.VarChar(1024)
+
+  emailVerifiedAt DateTime? @map("email_verified_at")
+
+  platformRole PlatformRole @default(USER) @map("platform_role")
+  status       UserStatus   @default(ACTIVE)
+
+  /// Bumped on "log out everywhere", password change and account suspension.
+  /// Sessions carrying an older epoch are rejected on the next request.
+  sessionEpoch Int @default(1) @map("session_epoch")
+
+  /// Brute-force protection. Cleared on a successful login.
+  failedLoginCount Int       @default(0) @map("failed_login_count")
+  lockedUntil      DateTime? @map("locked_until")
+
+  lastLoginAt DateTime? @map("last_login_at")
+  lastLoginIp String?   @map("last_login_ip") @db.VarChar(64)
+
+  /// User-level notification opt-outs. Transactional security email is always sent.
+  notifyPaymentEvents Boolean @default(true) @map("notify_payment_events")
+  notifyCreditAlerts  Boolean @default(true) @map("notify_credit_alerts")
+  notifyBatchEvents   Boolean @default(true) @map("notify_batch_events")
+  notifyProductUpdates Boolean @default(false) @map("notify_product_updates")
+
+  timezone String @default("UTC") @db.VarChar(64)
+  theme    String @default("system") @db.VarChar(16)
+
+  /// Soft delete. Retained rows are anonymized by the retention worker;
+  /// see docs/SECURITY_CHECKLIST.md for the data lifecycle.
+  deletedAt DateTime? @map("deleted_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  memberships      WorkspaceMember[]
+  ownedWorkspaces  Workspace[]        @relation("WorkspaceOwner")
+  oauthConnections OAuthConnection[]
+  authTokens       AuthToken[]
+  ledgerEntries    CreditLedgerEntry[]
+  payments         Payment[]
+  auditLogs        AuditLog[]
+  notifications    Notification[]
+  createdApiKeys   ApiKey[]
+  createdJobs      UrlJob[]
+  createdBatches   UrlBatch[]
+  sentInvites      WorkspaceInvite[]  @relation("InviteSender")
+
+  @@index([status])
+  @@index([platformRole])
+  @@index([createdAt])
+  @@map("users")
+}
+
+/// Single-use, hashed, expiring tokens for email verification, password reset
+/// and workspace invites. Only the SHA-256 hash is stored — a database leak
+/// does not yield usable tokens.
+model AuthToken {
+  id     String @id @default(uuid()) @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  type      AuthTokenType
+  tokenHash String        @unique @map("token_hash") @db.VarChar(64)
+
+  expiresAt  DateTime  @map("expires_at")
+  consumedAt DateTime? @map("consumed_at")
+
+  requestIp String? @map("request_ip") @db.VarChar(64)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+  @@index([expiresAt])
+  @@map("auth_tokens")
+}
+
+// =============================================================================
+// TENANCY
+// =============================================================================
+
+model Workspace {
+  id      String @id @default(uuid()) @db.Uuid
+  name    String @db.VarChar(200)
+  slug    String @unique @db.VarChar(80)
+  ownerId String @map("owner_id") @db.Uuid
+
+  logoUrl String? @map("logo_url") @db.VarChar(1024)
+  website String? @db.VarChar(512)
+
+  status WorkspaceStatus @default(ACTIVE)
+
+  /// Populated when a platform admin suspends the workspace, and surfaced to
+  /// the customer so a suspension is never silent.
+  suspendedAt     DateTime? @map("suspended_at")
+  suspendedReason String?   @map("suspended_reason") @db.VarChar(500)
+
+  /// Per-workspace overrides of the global limits. Null means "inherit".
+  maxBulkUrls           Int? @map("max_bulk_urls")
+  maxDailyUrls          Int? @map("max_daily_urls")
+  maxConcurrentJobs     Int? @map("max_concurrent_jobs")
+  dataRetentionDays     Int? @map("data_retention_days")
+
+  /// Low-balance notification threshold.
+  lowCreditThreshold Int     @default(100) @map("low_credit_threshold")
+  lowCreditNotifiedAt DateTime? @map("low_credit_notified_at")
+
+  billingEmail String? @map("billing_email") @db.VarChar(320)
+  billingName  String? @map("billing_name") @db.VarChar(200)
+  billingAddress String? @map("billing_address") @db.Text
+  taxId        String? @map("tax_id") @db.VarChar(64)
+
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  owner            User                    @relation("WorkspaceOwner", fields: [ownerId], references: [id])
+  members          WorkspaceMember[]
+  invites          WorkspaceInvite[]
+  oauthConnections OAuthConnection[]
+  properties       SearchConsoleProperty[]
+  urls             Url[]
+  jobs             UrlJob[]
+  batches          UrlBatch[]
+  wallet           CreditWallet?
+  ledgerEntries    CreditLedgerEntry[]
+  payments         Payment[]
+  subscriptions    Subscription[]
+  apiKeys          ApiKey[]
+  apiUsage         ApiUsage[]
+  auditLogs        AuditLog[]
+  notifications    Notification[]
+  quotaUsage       GoogleQuotaUsage[]
+
+  @@index([ownerId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id") @db.Uuid
+  userId      String @map("user_id") @db.Uuid
+
+  role WorkspaceRole @default(MEMBER)
+
+  invitedById String?  @map("invited_by_id") @db.Uuid
+  joinedAt    DateTime @default(now()) @map("joined_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// A user holds at most one role per workspace. This constraint is the
+  /// backbone of authorization: membership lookup is a single indexed read.
+  @@unique([workspaceId, userId])
+  @@index([userId])
+  @@index([workspaceId, role])
+  @@map("workspace_members")
+}
+
+model WorkspaceInvite {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id") @db.Uuid
+
+  email     String        @db.VarChar(320)
+  role      WorkspaceRole @default(MEMBER)
+  tokenHash String        @unique @map("token_hash") @db.VarChar(64)
+
+  invitedById String    @map("invited_by_id") @db.Uuid
+  expiresAt   DateTime  @map("expires_at")
+  acceptedAt  DateTime? @map("accepted_at")
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy User      @relation("InviteSender", fields: [invitedById], references: [id])
+
+  @@unique([workspaceId, email])
+  @@index([expiresAt])
+  @@map("workspace_invites")
+}
+
+// =============================================================================
+// GOOGLE INTEGRATION
+// =============================================================================
+
+/// Google OAuth grant. The refresh token is stored ONLY as AES-256-GCM
+/// ciphertext (src/lib/crypto.ts) and is never selected into any response body,
+/// template context or log line.
+model OAuthConnection {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id") @db.Uuid
+
+  /// The IndexFlow user who performed the consent flow.
+  userId String @map("user_id") @db.Uuid
+
+  provider          OAuthProvider @default(GOOGLE)
+  providerAccountId String        @map("provider_account_id") @db.VarChar(255)
+  googleEmail       String        @map("google_email") @db.VarChar(320)
+
+  /// AES-256-GCM ciphertext. Format: v1.<keyId>.<iv>.<tag>.<ciphertext>
+  refreshTokenEnc String @map("refresh_token_enc") @db.Text
+
+  /// Short-lived access tokens are cached encrypted to avoid a refresh on every
+  /// single API call while still never touching disk in plaintext.
+  accessTokenEnc       String?   @map("access_token_enc") @db.Text
+  accessTokenExpiresAt DateTime? @map("access_token_expires_at")
+
+  /// Space-separated granted scopes, so we can detect a downgraded grant.
+  scopes String @db.Text
+
+  status           ConnectionStatus @default(ACTIVE)
+  statusDetail     String?          @map("status_detail") @db.VarChar(500)
+  lastVerifiedAt   DateTime?        @map("last_verified_at")
+  lastRefreshedAt  DateTime?        @map("last_refreshed_at")
+  consecutiveFailures Int           @default(0) @map("consecutive_failures")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace  Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user       User                    @relation(fields: [userId], references: [id])
+  properties SearchConsoleProperty[]
+
+  /// One grant per Google account per workspace. Re-consenting updates in place.
+  @@unique([workspaceId, provider, providerAccountId])
+  @@index([workspaceId, status])
+  @@map("oauth_connections")
+}
+
+/// A Search Console property the customer selected. `siteUrl` and
+/// `permissionLevel` are copied from the authoritative sites.list response —
+/// we never let a client assert which property it owns.
+model SearchConsoleProperty {
+  id           String @id @default(uuid()) @db.Uuid
+  workspaceId  String @map("workspace_id") @db.Uuid
+  connectionId String @map("connection_id") @db.Uuid
+
+  /// Exactly as Google returns it: "sc-domain:example.com" or "https://example.com/"
+  siteUrl String @map("site_url") @db.VarChar(512)
+
+  /// Bare hostname derived from siteUrl, used to check that a submitted URL
+  /// actually belongs to this property.
+  hostname String @db.VarChar(255)
+
+  type            PropertyType
+  permissionLevel PropertyPermission @map("permission_level")
+
+  displayName String? @map("display_name") @db.VarChar(200)
+
+  /// Content type declared by the customer. Gates the Indexing API: only
+  /// JOB_POSTING and BROADCAST_EVENT properties may use it, matching Google's
+  /// documented scope.
+  contentType ContentType @default(GENERIC) @map("content_type")
+
+  /// Set true only after an admin/owner explicitly confirms the property serves
+  /// JobPosting or BroadcastEvent markup and they accept Google's terms.
+  indexingApiEnabled  Boolean   @default(false) @map("indexing_api_enabled")
+  indexingApiConfirmedAt DateTime? @map("indexing_api_confirmed_at")
+
+  /// Sitemap used for GENERIC submission workflow.
+  sitemapUrl        String?   @db.VarChar(1024) @map("sitemap_url")
+  sitemapLastSubmittedAt DateTime? @map("sitemap_last_submitted_at")
+
+  isActive     Boolean   @default(true) @map("is_active")
+  lastSyncedAt DateTime? @map("last_synced_at")
+
+  /// robots.txt cache so a batch of 10k URLs makes one fetch, not 10k.
+  robotsTxtFetchedAt DateTime? @map("robots_txt_fetched_at")
+  robotsTxtBody      String?   @map("robots_txt_body") @db.Text
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace  Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  connection OAuthConnection    @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  urls       Url[]
+  jobs       UrlJob[]
+  batches    UrlBatch[]
+  quotaUsage GoogleQuotaUsage[]
+
+  /// Two workspaces may legitimately both manage example.com (an agency and the
+  /// brand). The uniqueness is therefore per workspace, never global.
+  @@unique([workspaceId, siteUrl])
+  @@index([workspaceId, isActive])
+  @@index([connectionId])
+  @@index([hostname])
+  @@map("search_console_properties")
+}
+
+/// Rolling per-property, per-day counters so we can stop before Google's quota
+/// rejects us, and report QUOTA_LIMITED honestly instead of retrying forever.
+model GoogleQuotaUsage {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id") @db.Uuid
+  propertyId  String @map("property_id") @db.Uuid
+
+  /// UTC date bucket, matching how Google resets quota.
+  usageDate DateTime @map("usage_date") @db.Date
+  apiName   String   @map("api_name") @db.VarChar(64)
+
+  requestCount   Int @default(0) @map("request_count")
+  successCount   Int @default(0) @map("success_count")
+  quotaErrorCount Int @default(0) @map("quota_error_count")
+  otherErrorCount Int @default(0) @map("other_error_count")
+
+  /// When Google last returned 429/RESOURCE_EXHAUSTED, so the scheduler can
+  /// back off for the rest of the window.
+  lastQuotaErrorAt DateTime? @map("last_quota_error_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  property  SearchConsoleProperty @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+
+  @@unique([propertyId, usageDate, apiName])
+  @@index([workspaceId, usageDate])
+  @@map("google_quota_usage")
+}
+
+// =============================================================================
+// URLS
+// =============================================================================
+
+/// One row per distinct URL per workspace. `normalizedUrl` is the deduplication
+/// key produced by src/services/url/normalize.ts; `rawUrl` preserves what the
+/// customer actually typed for display.
+model Url {
+  id          String  @id @default(uuid()) @db.Uuid
+  workspaceId String  @map("workspace_id") @db.Uuid
+  propertyId  String? @map("property_id") @db.Uuid
+  batchId     String? @map("batch_id") @db.Uuid
+
+  rawUrl        String @map("raw_url") @db.VarChar(2048)
+  normalizedUrl String @map("normalized_url") @db.VarChar(2048)
+  hostname      String @db.VarChar(255)
+  pathname      String @db.VarChar(1024)
+
+  contentType ContentType @default(GENERIC) @map("content_type")
+
+  /// "Was an API told about this URL?" — kept strictly separate from indexing.
+  submissionStatus SubmissionStatus @default(NOT_SUBMITTED) @map("submission_status")
+  submittedAt      DateTime?        @map("submitted_at")
+  submissionMethod String?          @map("submission_method") @db.VarChar(64)
+
+  /// "Does Google say it is indexed?" — only ever written from a real
+  /// URL Inspection verdict. Defaults to UNKNOWN = "Status unavailable".
+  indexStatus    IndexStatus @default(UNKNOWN) @map("index_status")
+  indexVerdict   String?     @map("index_verdict") @db.VarChar(64)
+  coverageState  String?     @map("coverage_state") @db.VarChar(255)
+  lastCheckedAt  DateTime?   @map("last_checked_at")
+  lastCrawledAt  DateTime?   @map("last_crawled_at")
+  googleCanonical String?    @map("google_canonical") @db.VarChar(2048)
+  userCanonical   String?    @map("user_canonical") @db.VarChar(2048)
+  robotsTxtState  String?    @map("robots_txt_state") @db.VarChar(64)
+  indexingState   String?    @map("indexing_state") @db.VarChar(64)
+  pageFetchState  String?    @map("page_fetch_state") @db.VarChar(64)
+  mobileUsability String?    @map("mobile_usability") @db.VarChar(64)
+  richResultsVerdict String? @map("rich_results_verdict") @db.VarChar(64)
+
+  /// Pre-check results. These are advisory warnings shown to the customer;
+  /// IndexFlow never "fixes" or overrides them automatically.
+  precheckedAt      DateTime? @map("prechecked_at")
+  httpStatus        Int?      @map("http_status")
+  finalUrl          String?   @map("final_url") @db.VarChar(2048)
+  redirectCount     Int?      @map("redirect_count")
+  isHttps           Boolean?  @map("is_https")
+  robotsAllowed     Boolean?  @map("robots_allowed")
+  metaRobots        String?   @map("meta_robots") @db.VarChar(255)
+  xRobotsTag        String?   @map("x_robots_tag") @db.VarChar(255)
+  contentTypeHeader String?   @map("content_type_header") @db.VarChar(128)
+  precheckWarnings  Json?     @map("precheck_warnings")
+
+  lastError     String?   @map("last_error") @db.VarChar(1000)
+  lastErrorCode String?   @map("last_error_code") @db.VarChar(64)
+
+  creditsUsed Int @default(0) @map("credits_used")
+
+  /// Denormalized counter to cheaply show "already processed" without a join.
+  jobCount Int @default(0) @map("job_count")
+
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  property  SearchConsoleProperty? @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  batch     UrlBatch?              @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  jobs      UrlJob[]
+
+  /// THE core dedupe guarantee. Re-importing the same list is a no-op rather
+  /// than a duplicate charge.
+  @@unique([workspaceId, normalizedUrl])
+  @@index([workspaceId, indexStatus])
+  @@index([workspaceId, submissionStatus])
+  @@index([workspaceId, hostname])
+  @@index([workspaceId, createdAt])
+  @@index([propertyId, indexStatus])
+  @@index([batchId])
+  @@map("urls")
+}
+
+/// An import + processing batch. Gives the UI a real progress bar and gives the
+/// worker a unit to report completion against.
+model UrlBatch {
+  id          String  @id @default(uuid()) @db.Uuid
+  workspaceId String  @map("workspace_id") @db.Uuid
+  propertyId  String? @map("property_id") @db.Uuid
+
+  name   String      @db.VarChar(200)
+  source BatchSource
+  status BatchStatus @default(PENDING)
+
+  jobType JobType @default(SUBMIT) @map("job_type")
+
+  /// Import accounting, shown on the review screen before any credit is spent.
+  submittedCount Int @default(0) @map("submitted_count")
+  validCount     Int @default(0) @map("valid_count")
+  duplicateCount Int @default(0) @map("duplicate_count")
+  invalidCount   Int @default(0) @map("invalid_count")
+  skippedCount   Int @default(0) @map("skipped_count")
+
+  /// Processing accounting, updated by workers.
+  totalJobs     Int @default(0) @map("total_jobs")
+  processedJobs Int @default(0) @map("processed_jobs")
+  successJobs   Int @default(0) @map("success_jobs")
+  failedJobs    Int @default(0) @map("failed_jobs")
+
+  estimatedCredits Int @default(0) @map("estimated_credits")
+  reservedCredits  Int @default(0) @map("reserved_credits")
+  consumedCredits  Int @default(0) @map("consumed_credits")
+  refundedCredits  Int @default(0) @map("refunded_credits")
+
+  sourceFilename String? @map("source_filename") @db.VarChar(255)
+  sourceSitemap  String? @map("source_sitemap") @db.VarChar(1024)
+
+  /// Rejected rows with reasons, so the customer can fix and re-upload.
+  rejectionSample Json? @map("rejection_sample")
+  errorMessage    String? @map("error_message") @db.VarChar(1000)
+
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  property  SearchConsoleProperty? @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  createdBy User?                  @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  urls      Url[]
+  jobs      UrlJob[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, createdAt])
+  @@map("url_batches")
+}
+
+/// One unit of work against one URL. Carries its own credit reservation so a
+/// failure refunds exactly what it reserved and nothing more.
+model UrlJob {
+  id          String  @id @default(uuid()) @db.Uuid
+  workspaceId String  @map("workspace_id") @db.Uuid
+  urlId       String  @map("url_id") @db.Uuid
+  propertyId  String? @map("property_id") @db.Uuid
+  batchId     String? @map("batch_id") @db.Uuid
+
+  jobType JobType
+  state   JobState @default(QUEUED)
+
+  /// Client-supplied or server-derived key. The unique constraint below turns
+  /// "submit this URL twice by accident" into a rejected insert instead of a
+  /// double charge.
+  idempotencyKey String @map("idempotency_key") @db.VarChar(128)
+
+  priority Int @default(0)
+
+  attempts    Int @default(0)
+  maxAttempts Int @default(5) @map("max_attempts")
+
+  /// Credits reserved at creation, consumed on billable success, refunded when
+  /// the failure was not the customer's fault (our bug, Google 5xx, timeout).
+  creditsReserved Int @default(0) @map("credits_reserved")
+  creditsConsumed Int @default(0) @map("credits_consumed")
+  creditsRefunded Int @default(0) @map("credits_refunded")
+
+  /// Distributed lock. A worker claims a job by CAS-ing lockedBy/lockedUntil,
+  /// so a crashed worker's jobs become reclaimable instead of stuck.
+  lockedBy    String?   @map("locked_by") @db.VarChar(128)
+  lockedUntil DateTime? @map("locked_until")
+
+  queueJobId String? @map("queue_job_id") @db.VarChar(128)
+
+  scheduledFor DateTime? @map("scheduled_for")
+  startedAt    DateTime? @map("started_at")
+  finishedAt   DateTime? @map("finished_at")
+
+  /// Terminal-failure bookkeeping.
+  errorCode    String?  @map("error_code") @db.VarChar(64)
+  errorMessage String?  @map("error_message") @db.VarChar(1000)
+  /// True once retries are exhausted and the job was parked for inspection.
+  deadLettered   Boolean   @default(false) @map("dead_lettered")
+  deadLetteredAt DateTime? @map("dead_lettered_at")
+
+  /// Raw, redacted provider response kept for support and for proving we did
+  /// not invent a status.
+  providerResponse Json? @map("provider_response")
+
+  createdById String?  @map("created_by_id") @db.Uuid
+  apiKeyId    String?  @map("api_key_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  url       Url                    @relation(fields: [urlId], references: [id], onDelete: Cascade)
+  property  SearchConsoleProperty? @relation(fields: [propertyId], references: [id], onDelete: SetNull)
+  batch     UrlBatch?              @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  createdBy User?                  @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  apiKey    ApiKey?                @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+  jobAttempts JobAttempt[]
+  ledgerEntries CreditLedgerEntry[]
+
+  @@unique([workspaceId, idempotencyKey])
+  @@index([workspaceId, state])
+  @@index([workspaceId, createdAt])
+  @@index([state, scheduledFor])
+  @@index([urlId])
+  @@index([batchId, state])
+  @@index([deadLettered])
+  @@map("url_jobs")
+}
+
+/// Immutable per-attempt record. Makes "why did this fail 4 times" answerable.
+model JobAttempt {
+  id    String @id @default(uuid()) @db.Uuid
+  jobId String @map("job_id") @db.Uuid
+
+  attemptNumber Int      @map("attempt_number")
+  startedAt     DateTime @default(now()) @map("started_at")
+  finishedAt    DateTime? @map("finished_at")
+  durationMs    Int?     @map("duration_ms")
+
+  outcome    String  @db.VarChar(32)
+  httpStatus Int?    @map("http_status")
+  errorCode  String? @map("error_code") @db.VarChar(64)
+  errorMessage String? @map("error_message") @db.VarChar(1000)
+
+  workerId String? @map("worker_id") @db.VarChar(128)
+
+  job UrlJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, attemptNumber])
+  @@index([jobId])
+  @@map("job_attempts")
+}
+
+// =============================================================================
+// CREDITS
+// =============================================================================
+
+/// Current balances. This table is a cache of the ledger for fast reads; the
+/// ledger is the source of truth and `scripts/reconcile.ts` proves they agree.
+/// All mutations happen inside a SERIALIZABLE transaction with SELECT ... FOR
+/// UPDATE on this row — see src/services/credit/wallet.ts.
+model CreditWallet {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @unique @map("workspace_id") @db.Uuid
+
+  /// Spendable now.
+  availableCredits Int @default(0) @map("available_credits")
+  /// Held for in-flight jobs. Not spendable, not yet spent.
+  reservedCredits  Int @default(0) @map("reserved_credits")
+
+  /// Lifetime totals for the billing page. Derived, never authoritative.
+  lifetimePurchased Int @default(0) @map("lifetime_purchased")
+  lifetimeBonus     Int @default(0) @map("lifetime_bonus")
+  lifetimeConsumed  Int @default(0) @map("lifetime_consumed")
+  lifetimeRefunded  Int @default(0) @map("lifetime_refunded")
+
+  /// Optimistic-concurrency guard, incremented on every mutation.
+  version Int @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@map("credit_wallets")
+}
+
+/// APPEND-ONLY. Never updated, never deleted by application code, and a
+/// database trigger blocks UPDATE/DELETE entirely (prisma/post-migrate.sql).
+/// Every row records the balances on both sides of the movement so any
+/// historical balance can be reconstructed and audited.
+model CreditLedgerEntry {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id") @db.Uuid
+
+  type CreditTxnType
+
+  /// Signed delta applied to the AVAILABLE bucket. Positive credits the customer.
+  amount Int
+
+  /// Signed delta applied to the RESERVED bucket.
+  ///
+  /// Splitting the two buckets into two explicit deltas makes every movement
+  /// balance arithmetically, and makes `amount + reservedDelta` the change in
+  /// the customer's TOTAL credit holding:
+  ///
+  ///   PURCHASE        amount=+N  reserved= 0   total +N   (they bought credits)
+  ///   BONUS           amount=+N  reserved= 0   total +N
+  ///   RESERVE         amount=-N  reserved=+N   total  0   (held, not yet spent)
+  ///   RESERVE_RELEASE amount=+N  reserved=-N   total  0   (un-held)
+  ///   REFUND          amount=+N  reserved=-N   total  0   (returned unused)
+  ///   DEBIT           amount= 0  reserved=-N   total -N   (the only real spend)
+  ///
+  /// So DEBIT is the single movement type that permanently reduces what the
+  /// customer holds — which is exactly what "we did billable work" should mean.
+  reservedDelta Int @default(0) @map("reserved_delta")
+
+  availableBefore Int @map("available_before")
+  availableAfter  Int @map("available_after")
+  reservedBefore  Int @map("reserved_before")
+  reservedAfter   Int @map("reserved_after")
+
+  reason String @db.VarChar(300)
+
+  /// Rejects a duplicate movement at the storage layer. Webhook replays, retried
+  /// HTTP requests and double-clicked buttons all collapse to one entry.
+  idempotencyKey String @map("idempotency_key") @db.VarChar(160)
+
+  jobId     String? @map("job_id") @db.Uuid
+  batchId   String? @map("batch_id") @db.Uuid
+  paymentId String? @map("payment_id") @db.Uuid
+
+  /// Actor. Null for system/worker-initiated movements.
+  userId    String? @map("user_id") @db.Uuid
+  apiKeyId  String? @map("api_key_id") @db.Uuid
+  /// Set when a platform admin moved credits, alongside a mandatory audit log.
+  adminUserId String? @map("admin_user_id") @db.Uuid
+
+  metadata Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  job       UrlJob?   @relation(fields: [jobId], references: [id], onDelete: SetNull)
+  payment   Payment?  @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, idempotencyKey])
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, type])
+  @@index([jobId])
+  @@index([paymentId])
+  @@map("credit_ledger")
+}
+
+// =============================================================================
+// BILLING
+// =============================================================================
+
+/// Credit packs, editable from the admin panel. Prices are stored in the
+/// currency's minor unit (paise for INR, cents for USD) as integers — never
+/// floats — and are read from here at checkout time rather than hard-coded.
+model CreditPackage {
+  id   String @id @default(uuid()) @db.Uuid
+  code String @unique @db.VarChar(40)
+
+  name        String  @db.VarChar(120)
+  description String? @db.VarChar(500)
+
+  credits Int
+  /// Minor units. 499000 = ₹4,990.00
+  priceMinor Int    @map("price_minor")
+  currency   String @default("INR") @db.VarChar(3)
+
+  /// Optional strikethrough price for showing a discount honestly.
+  compareAtMinor Int? @map("compare_at_minor")
+
+  bonusCredits Int @default(0) @map("bonus_credits")
+
+  isActive   Boolean @default(true) @map("is_active")
+  isFeatured Boolean @default(false) @map("is_featured")
+  sortOrder  Int     @default(0) @map("sort_order")
+
+  /// Credit expiry in days from purchase. Null = never expires.
+  validityDays Int? @map("validity_days")
+
+  features Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  payments      Payment[]
+  subscriptions Subscription[]
+
+  @@index([isActive, sortOrder])
+  @@map("credit_packages")
+}
+
+model Payment {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id") @db.Uuid
+  userId      String @map("user_id") @db.Uuid
+  packageId   String? @map("package_id") @db.Uuid
+
+  /// Human-friendly invoice reference, e.g. IF-2026-000123.
+  reference String @unique @db.VarChar(40)
+
+  provider String @default("razorpay") @db.VarChar(40)
+
+  /// Provider order id. Unique so the same order cannot be recorded twice.
+  providerOrderId String @unique @map("provider_order_id") @db.VarChar(128)
+  /// Provider payment id, set once a payment attempt succeeds.
+  providerPaymentId String? @unique @map("provider_payment_id") @db.VarChar(128)
+  providerSignature String? @map("provider_signature") @db.VarChar(256)
+
+  status PaymentStatus @default(CREATED)
+
+  /// All amounts in minor units.
+  amountMinor    Int    @map("amount_minor")
+  taxMinor       Int    @default(0) @map("tax_minor")
+  totalMinor     Int    @map("total_minor")
+  refundedMinor  Int    @default(0) @map("refunded_minor")
+  currency       String @default("INR") @db.VarChar(3)
+
+  /// Credits this payment buys. Snapshotted at order time so a later admin
+  /// price change cannot retroactively alter a completed sale.
+  creditsPurchased Int @map("credits_purchased")
+  /// Flipped to true inside the same transaction that writes the PURCHASE
+  /// ledger entry. Guarantees credits are granted at most once per payment.
+  creditsGranted   Boolean   @default(false) @map("credits_granted")
+  creditsGrantedAt DateTime? @map("credits_granted_at")
+
+  method       String? @db.VarChar(40)
+  failureCode   String? @map("failure_code") @db.VarChar(64)
+  failureReason String? @map("failure_reason") @db.VarChar(500)
+
+  /// Redacted provider payload for support. Card data is never stored.
+  providerMeta Json? @map("provider_meta")
+
+  paidAt     DateTime? @map("paid_at")
+  refundedAt DateTime? @map("refunded_at")
+
+  createdIp String?  @map("created_ip") @db.VarChar(64)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User               @relation(fields: [userId], references: [id])
+  package   CreditPackage?     @relation(fields: [packageId], references: [id], onDelete: SetNull)
+  ledgerEntries CreditLedgerEntry[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, createdAt])
+  @@index([status, createdAt])
+  @@map("payments")
+}
+
+/// Every webhook delivery we have ever seen. The unique (provider, eventId)
+/// constraint is what makes replay attacks and provider retries safe: the
+/// second insert fails, so credits cannot be granted twice.
+model PaymentWebhookEvent {
+  id       String @id @default(uuid()) @db.Uuid
+  provider String @db.VarChar(40)
+
+  /// Provider's event id, or a SHA-256 of the raw body when the provider does
+  /// not send one.
+  eventId   String @map("event_id") @db.VarChar(191)
+  eventType String @map("event_type") @db.VarChar(80)
+
+  status WebhookStatus @default(RECEIVED)
+
+  signatureValid Boolean @default(false) @map("signature_valid")
+
+  /// SHA-256 of the exact raw bytes we verified, for forensic comparison.
+  payloadHash String @map("payload_hash") @db.VarChar(64)
+  /// Redacted payload. Secrets and card data are stripped before storage.
+  payload     Json?
+
+  relatedPaymentId String? @map("related_payment_id") @db.Uuid
+  workspaceId      String? @map("workspace_id") @db.Uuid
+
+  processedAt  DateTime? @map("processed_at")
+  processingMs Int?      @map("processing_ms")
+  errorMessage String?   @map("error_message") @db.VarChar(1000)
+  attempts     Int       @default(0)
+
+  receivedIp String?  @map("received_ip") @db.VarChar(64)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([provider, eventId])
+  @@index([status, createdAt])
+  @@index([relatedPaymentId])
+  @@map("payment_webhooks")
+}
+
+model Subscription {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id") @db.Uuid
+  packageId   String @map("package_id") @db.Uuid
+
+  provider               String  @default("razorpay") @db.VarChar(40)
+  providerSubscriptionId String? @unique @map("provider_subscription_id") @db.VarChar(128)
+  providerPlanId         String? @map("provider_plan_id") @db.VarChar(128)
+
+  status SubscriptionStatus @default(ACTIVE)
+
+  /// Credits topped up automatically at each renewal.
+  creditsPerCycle Int    @map("credits_per_cycle")
+  intervalUnit    String @default("month") @map("interval_unit") @db.VarChar(16)
+  intervalCount   Int    @default(1) @map("interval_count")
+
+  currentPeriodStart DateTime  @map("current_period_start")
+  currentPeriodEnd   DateTime  @map("current_period_end")
+  cancelAtPeriodEnd  Boolean   @default(false) @map("cancel_at_period_end")
+  cancelledAt        DateTime? @map("cancelled_at")
+
+  lastGrantedCycleEnd DateTime? @map("last_granted_cycle_end")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  package   CreditPackage @relation(fields: [packageId], references: [id])
+
+  @@index([workspaceId, status])
+  @@index([status, currentPeriodEnd])
+  @@map("subscriptions")
+}
+
+// =============================================================================
+// API ACCESS
+// =============================================================================
+
+/// API credentials for business customers.
+///
+/// The secret is shown EXACTLY ONCE at creation. We store only a SHA-256 hash
+/// (fast, constant-time compared, and API secrets are already high-entropy so
+/// a slow KDF buys nothing here). The `keyId` is the public half used for
+/// lookup, so authentication is one indexed read plus one constant-time compare.
+model ApiKey {
+  id          String @id @default(uuid()) @db.Uuid
+  workspaceId String @map("workspace_id") @db.Uuid
+
+  name String @db.VarChar(120)
+
+  /// Public identifier, e.g. ifk_live_9f2c... Safe to display and log.
+  keyId String @unique @map("key_id") @db.VarChar(64)
+  /// SHA-256 of the secret half. The secret itself is never stored.
+  secretHash String @map("secret_hash") @db.VarChar(64)
+  /// First/last few characters for recognizability in the UI.
+  secretHint String @map("secret_hint") @db.VarChar(32)
+
+  status ApiKeyStatus @default(ACTIVE)
+
+  /// Granular scopes, e.g. ["urls:write","jobs:read","credits:read"].
+  scopes String[] @default([])
+
+  /// Optional CIDR allowlist. Empty array = no IP restriction.
+  allowedIps String[] @default([]) @map("allowed_ips")
+
+  /// Per-key throttles, overriding workspace defaults when set.
+  rateLimitPerMinute Int? @map("rate_limit_per_minute")
+  dailyRequestLimit  Int? @map("daily_request_limit")
+  dailyCreditLimit   Int? @map("daily_credit_limit")
+
+  lastUsedAt DateTime? @map("last_used_at")
+  lastUsedIp String?   @map("last_used_ip") @db.VarChar(64)
+  requestCount Int     @default(0) @map("request_count")
+
+  expiresAt DateTime? @map("expires_at")
+
+  /// Key rotation: the old key keeps working until graceRevokeAt so a customer
+  /// can redeploy without downtime.
+  rotatedFromId  String?   @map("rotated_from_id") @db.Uuid
+  graceRevokeAt  DateTime? @map("grace_revoke_at")
+
+  revokedAt   DateTime? @map("revoked_at")
+  revokedById String?   @map("revoked_by_id") @db.Uuid
+
+  createdById String   @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  workspace Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User       @relation(fields: [createdById], references: [id])
+  usage     ApiUsage[]
+  jobs      UrlJob[]
+
+  @@index([workspaceId, status])
+  @@map("api_keys")
+}
+
+/// Per-request API metering. Aggregated hourly by the maintenance worker so this
+/// table stays bounded even at high volume.
+model ApiUsage {
+  id          String  @id @default(uuid()) @db.Uuid
+  workspaceId String  @map("workspace_id") @db.Uuid
+  apiKeyId    String? @map("api_key_id") @db.Uuid
+
+  method   String @db.VarChar(10)
+  endpoint String @db.VarChar(200)
+
+  statusCode Int  @map("status_code")
+  latencyMs  Int  @map("latency_ms")
+
+  creditsSpent Int @default(0) @map("credits_spent")
+
+  requestId String? @map("request_id") @db.VarChar(64)
+  ip        String? @db.VarChar(64)
+  userAgent String? @map("user_agent") @db.VarChar(300)
+
+  errorCode String? @map("error_code") @db.VarChar(64)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  apiKey    ApiKey?   @relation(fields: [apiKeyId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([apiKeyId, createdAt])
+  @@index([createdAt])
+  @@map("api_usage")
+}
+
+// =============================================================================
+// PLATFORM
+// =============================================================================
+
+/// Tamper-evident action log. Written for every mutating action, every admin
+/// action and every security-relevant event. Append-only, like the ledger.
+model AuditLog {
+  id          String  @id @default(uuid()) @db.Uuid
+  workspaceId String? @map("workspace_id") @db.Uuid
+  userId      String? @map("user_id") @db.Uuid
+
+  /// Dotted action name, e.g. "credit.admin_adjustment", "apikey.revoked".
+  action String @db.VarChar(80)
+
+  /// Target of the action.
+  targetType String? @map("target_type") @db.VarChar(60)
+  targetId   String? @map("target_id") @db.VarChar(64)
+
+  /// Human-readable summary shown in the UI.
+  summary String @db.VarChar(500)
+
+  /// Before/after for changed fields. Secrets are redacted by the audit service.
+  changes Json?
+  metadata Json?
+
+  /// Set when a platform admin acted on a customer's workspace.
+  actorIsAdmin Boolean @default(false) @map("actor_is_admin")
+
+  ip        String? @db.VarChar(64)
+  userAgent String? @map("user_agent") @db.VarChar(300)
+  requestId String? @map("request_id") @db.VarChar(64)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@index([targetType, targetId])
+  @@map("audit_logs")
+}
+
+model Notification {
+  id          String  @id @default(uuid()) @db.Uuid
+  workspaceId String? @map("workspace_id") @db.Uuid
+  userId      String  @map("user_id") @db.Uuid
+
+  kind    NotificationKind
+  channel NotificationChannel @default(IN_APP)
+
+  title String @db.VarChar(200)
+  body  String @db.Text
+  /// Relative in-app link, validated to prevent open redirect.
+  linkPath String? @map("link_path") @db.VarChar(300)
+
+  severity String @default("info") @db.VarChar(16)
+
+  readAt DateTime? @map("read_at")
+
+  /// Email delivery bookkeeping.
+  emailSentAt  DateTime? @map("email_sent_at")
+  emailError   String?   @map("email_error") @db.VarChar(500)
+
+  /// Collapses repeated alerts, e.g. one CREDITS_LOW per workspace per day.
+  dedupeKey String? @map("dedupe_key") @db.VarChar(160)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, dedupeKey])
+  @@index([userId, readAt])
+  @@index([workspaceId, createdAt])
+  @@map("notifications")
+}
+
+/// Runtime-editable configuration and feature flags. Values here override
+/// environment defaults so an operator can change a limit without a redeploy.
+/// Read through src/services/settings.ts, which caches with a short TTL.
+model SystemSetting {
+  key   String @id @db.VarChar(120)
+  value Json
+
+  /// "limits" | "pricing" | "features" | "google" | "security"
+  category    String  @default("general") @db.VarChar(40)
+  description String? @db.VarChar(500)
+
+  /// Never expose non-public settings to a customer-facing response.
+  isPublic Boolean @default(false) @map("is_public")
+
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([category])
+  @@map("system_settings")
+}

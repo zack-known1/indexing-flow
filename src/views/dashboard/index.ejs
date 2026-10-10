@@ -1,0 +1,107 @@
+<%- include('../partials/header') %>
+
+<div class="page-header">
+  <div class="page-header-text">
+    <h1>Dashboard</h1>
+    <p>Monitor your Google indexing status and recent URL submissions.</p>
+  </div>
+  <div class="page-header-actions">
+    <a href="/properties" class="btn btn-secondary"><i class="fa-brands fa-google" style="color: #ea4335"></i> Manage Properties</a>
+    <a href="/urls/submit" class="btn btn-primary"><i class="fa-solid fa-plus"></i> Submit URLs</a>
+  </div>
+</div>
+
+<div class="grid-4 mb-6">
+  <div class="stat">
+    <span class="stat-label"><i class="fa-solid fa-link"></i> Total Tracked URLs</span>
+    <span class="stat-value"><%= stats.totalUrls.toLocaleString() %></span>
+  </div>
+  <div class="stat">
+    <span class="stat-label"><i class="fa-solid fa-check"></i> Indexed on Google</span>
+    <span class="stat-value"><%= stats.indexedUrls.toLocaleString() %></span>
+  </div>
+  <div class="stat">
+    <span class="stat-label"><i class="fa-solid fa-hourglass-half"></i> Discovered / Crawled</span>
+    <span class="stat-value"><%= stats.discoveredUrls.toLocaleString() %></span>
+  </div>
+  <div class="stat">
+    <span class="stat-label"><i class="fa-solid fa-coins"></i> Available Credits</span>
+    <span class="stat-value"><%= walletBalance.available.toLocaleString() %></span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-header">
+    <div>
+      <h3>Recent URL Indexing Activity</h3>
+    </div>
+    <div class="card-header-actions">
+      <a href="/urls" class="btn btn-ghost btn-sm">View all URLs &rarr;</a>
+    </div>
+  </div>
+  <% if (recentUrls.length === 0) { %>
+    <div class="empty-state">
+      <div class="empty-state-icon"><i class="fa-solid fa-inbox"></i></div>
+      <h3>No URLs submitted yet</h3>
+      <p>Submit a URL to start tracking its Google indexing status.</p>
+      <div class="btn-group">
+        <a href="/urls/submit" class="btn btn-primary btn-sm">Submit your first URL</a>
+      </div>
+    </div>
+  <% } else { %>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th scope="col">URL</th>
+            <th scope="col">Property</th>
+            <th scope="col">Submission</th>
+            <th scope="col">Index Status</th>
+            <th scope="col">Last Checked</th>
+            <th scope="col" class="num">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% recentUrls.forEach(url => { %>
+            <tr>
+              <td style="max-width: 20rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500">
+                <a href="<%= url.rawUrl %>" target="_blank" title="<%= url.rawUrl %>"><%= url.rawUrl %></a>
+              </td>
+              <td class="text-muted text-xs">
+                <%= url.property ? url.property.siteUrl : 'None' %>
+              </td>
+              <td>
+                <% if (url.submissionStatus === 'SUBMITTED') { %>
+                  <span class="badge badge-success">Submitted</span>
+                <% } else { %>
+                  <span class="badge badge-neutral"><%= url.submissionStatus %></span>
+                <% } %>
+              </td>
+              <td>
+                <% if (url.indexStatus === 'INDEXED') { %>
+                  <span class="badge badge-success"><i class="fa-solid fa-check"></i> Indexed</span>
+                <% } else if (url.indexStatus === 'DISCOVERED_NOT_INDEXED' || url.indexStatus === 'CRAWLED_NOT_INDEXED') { %>
+                  <span class="badge badge-warn"><i class="fa-solid fa-clock"></i> <%= url.indexStatus.replace(/_/g, ' ') %></span>
+                <% } else if (url.indexStatus === 'UNKNOWN') { %>
+                  <span class="badge badge-neutral">Pending check</span>
+                <% } else { %>
+                  <span class="badge badge-danger"><%= url.indexStatus.replace(/_/g, ' ') %></span>
+                <% } %>
+              </td>
+              <td class="text-muted text-xs">
+                <%= url.lastCheckedAt ? new Date(url.lastCheckedAt).toLocaleString() : 'Never' %>
+              </td>
+              <td class="num">
+                <form action="/urls/<%= url.id %>/check" method="POST" class="inline">
+                  <button type="submit" class="btn btn-secondary btn-sm">Check Status</button>
+                </form>
+              </td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </div>
+  <% } %>
+</div>
+
+<%- include('../partials/footer') %>

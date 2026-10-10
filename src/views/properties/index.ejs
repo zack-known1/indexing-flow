@@ -1,0 +1,113 @@
+<%- include('../partials/header') %>
+
+<div class="px-4 py-6 sm:px-0">
+  <div class="flex justify-between items-center mb-6">
+    <div>
+      <h1 class="text-2xl font-bold text-gray-900">Google Search Console Properties</h1>
+      <p class="text-sm text-gray-500">Connect Google accounts to fetch verified sites and manage Indexing API credentials.</p>
+    </div>
+    <div>
+      <a href="/properties/google/connect" class="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700">
+        <i class="fa-brands fa-google mr-2"></i> Connect Google Account
+      </a>
+    </div>
+  </div>
+
+  <!-- Connected Google Accounts -->
+  <div class="bg-white shadow rounded-lg border border-gray-200 overflow-hidden mb-8">
+    <div class="px-6 py-4 border-b border-gray-200">
+      <h3 class="text-lg font-medium text-gray-900">Connected Google Accounts</h3>
+    </div>
+    <% if (connections.length === 0) { %>
+      <div class="p-8 text-center text-gray-500">
+        <i class="fa-brands fa-google text-4xl mb-3 text-gray-300"></i>
+        <p>No Google accounts connected yet.</p>
+        <a href="/properties/google/connect" class="mt-2 inline-block text-blue-600 font-medium hover:underline">Connect Google Account to import Search Console sites</a>
+      </div>
+    <% } else { %>
+      <ul class="divide-y divide-gray-200">
+        <% connections.forEach(conn => { %>
+          <li class="px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center">
+              <div class="flex-shrink-0 bg-red-100 p-2 rounded-full text-red-600">
+                <i class="fa-brands fa-google text-xl"></i>
+              </div>
+              <div class="ml-4">
+                <p class="text-sm font-medium text-gray-900"><%= conn.googleEmail %></p>
+                <p class="text-xs text-gray-500">Status: <span class="capitalize font-semibold text-green-600"><%= conn.status %></span> | Synced: <%= conn.properties.length %> properties</p>
+              </div>
+            </div>
+            <div>
+              <form action="/properties/sync/<%= conn.id %>" method="POST">
+                <button type="submit" class="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50">
+                  <i class="fa-solid fa-arrows-rotate mr-1"></i> Sync Sites
+                </button>
+              </form>
+            </div>
+          </li>
+        <% }) %>
+      </ul>
+    <% } %>
+  </div>
+
+  <!-- Properties List -->
+  <div class="bg-white shadow rounded-lg border border-gray-200 overflow-hidden">
+    <div class="px-6 py-4 border-b border-gray-200">
+      <h3 class="text-lg font-medium text-gray-900">Search Console Properties</h3>
+    </div>
+    <% if (properties.length === 0) { %>
+      <div class="p-8 text-center text-gray-500">
+        <p>No Search Console properties found.</p>
+      </div>
+    <% } else { %>
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200 text-sm">
+          <thead class="bg-gray-50">
+            <tr>
+              <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Property Site URL</th>
+              <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+              <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Permission</th>
+              <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tracked URLs</th>
+              <th scope="col" class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Indexing API</th>
+              <th scope="col" class="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+            </tr>
+          </thead>
+          <tbody class="bg-white divide-y divide-gray-200">
+            <% properties.forEach(prop => { %>
+              <tr>
+                <td class="px-6 py-4 whitespace-nowrap font-medium text-gray-900">
+                  <%= prop.siteUrl %>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-xs text-gray-500">
+                  <span class="px-2 py-0.5 rounded text-xs bg-gray-100 border text-gray-800"><%= prop.type %></span>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-xs text-gray-500">
+                  <%= prop.permissionLevel.replace('SITE_', '') %>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-xs font-semibold text-gray-700">
+                  <%= prop._count.urls %>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap">
+                  <% if (prop.indexingApiEnabled) { %>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Enabled</span>
+                  <% } else { %>
+                    <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">Sitemap mode</span>
+                  <% } %>
+                </td>
+                <td class="px-6 py-4 whitespace-nowrap text-right text-xs font-medium space-x-2">
+                  <form action="/properties/<%= prop.id %>/toggle-indexing" method="POST" class="inline">
+                    <button type="submit" class="text-xs px-2.5 py-1 rounded border <%= prop.indexingApiEnabled ? 'bg-gray-50 text-gray-700 border-gray-300' : 'bg-blue-50 text-blue-700 border-blue-200' %>">
+                      <%= prop.indexingApiEnabled ? 'Switch to Sitemap' : 'Enable Indexing API' %>
+                    </button>
+                  </form>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+    <% } %>
+  </div>
+</div>
+
+<%- include('../partials/footer') %>

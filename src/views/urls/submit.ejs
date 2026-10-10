@@ -1,0 +1,67 @@
+<%- include('../partials/header') %>
+
+<div class="max-w-4xl mx-auto px-4 py-8">
+  <div class="mb-6">
+    <h1 class="text-2xl font-bold text-gray-900">Submit URLs to Google</h1>
+    <p class="text-sm text-gray-500">Paste your URLs to initiate indexing workflow with Google Search Console.</p>
+  </div>
+
+  <% if (properties.length === 0) { %>
+    <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-6">
+      <div class="flex">
+        <div class="flex-shrink-0">
+          <i class="fa-solid fa-triangle-exclamation text-yellow-400"></i>
+        </div>
+        <div class="ml-3">
+          <p class="text-sm text-yellow-700">
+            You don't have any connected Google Search Console properties yet.
+            <a href="/properties" class="font-medium underline text-yellow-700 hover:text-yellow-600">Connect a Google property first</a>.
+          </p>
+        </div>
+      </div>
+    </div>
+  <% } %>
+
+  <div class="bg-white shadow rounded-lg border border-gray-200 p-6">
+    <form action="/urls/submit" method="POST" class="space-y-6">
+      <div>
+        <label for="propertyId" class="block text-sm font-medium text-gray-700">Select Google Property</label>
+        <select id="propertyId" name="propertyId" required class="mt-1 block w-full pl-3 pr-10 py-2 text-base border border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md">
+          <option value="">-- Choose a Search Console Property --</option>
+          <% properties.forEach(prop => { %>
+            <option value="<%= prop.id %>"><%= prop.siteUrl %> (<%= prop.type %>)</option>
+          <% }) %>
+        </select>
+      </div>
+
+      <div>
+        <label for="batchName" class="block text-sm font-medium text-gray-700">Batch Name (Optional)</label>
+        <input type="text" name="batchName" id="batchName" placeholder="e.g. New Blog Posts 2026" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm">
+      </div>
+
+      <div>
+        <label for="urlsText" class="block text-sm font-medium text-gray-700">URLs (One URL per line)</label>
+        <p class="text-xs text-gray-500 mb-2">Enter the exact URLs you want Google to index. Each URL must belong to the selected property.</p>
+        <textarea id="urlsText" name="urlsText" rows="10" required placeholder="https://example.com/page-1&#10;https://example.com/page-2&#10;https://example.com/blog/new-article" class="shadow-sm focus:ring-blue-500 focus:border-blue-500 block w-full sm:text-sm border border-gray-300 rounded-md font-mono p-3"></textarea>
+      </div>
+
+      <div class="bg-gray-50 p-4 rounded-md border border-gray-200 flex justify-between items-center text-sm">
+        <div>
+          <span class="text-gray-500">Credit cost per URL:</span> <strong class="text-gray-900"><%= costPerUrl %> credit</strong>
+        </div>
+        <div>
+          <span class="text-gray-500">Your available balance:</span> <strong class="text-blue-600"><%= walletBalance.available.toLocaleString() %> credits</strong>
+        </div>
+      </div>
+
+      <div class="flex justify-end space-x-3">
+        <a href="/urls" class="bg-white py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 hover:bg-gray-50">Cancel</a>
+        <button type="submit" <%= properties.length === 0 ? 'disabled' : '' %> class="inline-flex justify-center py-2 px-6 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 <%= properties.length === 0 ? 'opacity-50 cursor-not-allowed' : '' %>">
+          <i class="fa-solid fa-paper-plane mr-2"></i> Submit for Indexing
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<%- include('../partials/footer') %>

@@ -1,0 +1,34 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rtk npm *)",
+      "Bash(rtk tsc *)",
+      "Bash(rtk ls *)",
+      "Bash(rtk docker *)",
+      "Bash(docker-compose up *)",
+      "Bash(npm install *)",
+      "Bash(rtk prisma *)",
+      "Bash(docker-compose down *)",
+      "Bash(rtk curl *)",
+      "Bash(curl -s http://localhost:3000/login)",
+      "Bash(rtk read *)",
+      "Bash(docker info *)",
+      "Bash(netstat -ano)",
+      "Bash(tasklist //FI \"PID eq 10300\" //FO LIST)",
+      "Bash(tasklist //FI \"PID eq 12504\" //FO LIST)",
+      "Bash(tasklist //FI \"PID eq 18856\" //FO LIST)",
+      "Bash(wmic process *)",
+      "Bash(powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter 'ProcessId=10300' | Select-Object -ExpandProperty CommandLine\")",
+      "Bash(rtk find *)",
+      "WebFetch(domain:rocketindexer.com)",
+      "Bash(node -e ' *)",
+      "Bash(rtk grep *)",
+      "Bash(npm run *)",
+      "Bash(npm test *)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(rtk npx *)",
+      "Bash(npx prisma *)",
+      "Bash(node \"C:\\\\Users\\\\mehar\\\\AppData\\\\Local\\\\Temp\\\\indexflow-env-check\\\\check.js\")"
+    ]
+  }
+}

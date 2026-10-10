@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title><%= title %> | <%= appName %></title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/css/app.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css">
+</head>
+<% const isAuthed = typeof user !== 'undefined' && user; %>
+<% const navItem = (href, label, icon, match) => `<a href="${href}" class="sidebar-item${title === match ? ' is-active' : ''}"><i class="${icon}"></i>${label}</a>`; %>
+<body>
+  <% if (isAuthed) { %>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a href="/" class="sidebar-brand"><i class="fa-solid fa-bolt" style="color: var(--accent)"></i><%= appName %></a>
+      <nav class="sidebar-nav">
+        <div class="nav-group">
+          <span class="nav-group-label">Workspace</span>
+          <%- navItem('/', 'Dashboard', 'fa-solid fa-gauge', 'Dashboard') %>
+          <%- navItem('/urls', 'Indexed URLs', 'fa-solid fa-link', 'Indexed URLs') %>
+          <%- navItem('/urls/submit', 'Submit URLs', 'fa-solid fa-paper-plane', 'Submit URLs for Indexing') %>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-label">Account</span>
+          <%- navItem('/properties', 'Properties', 'fa-brands fa-google', 'Google Properties') %>
+          <%- navItem('/billing', 'Billing & Credits', 'fa-solid fa-coins', 'Billing & Credits') %>
+        </div>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-sm font-medium truncate"><%= user.name || user.email %></span>
+          <form action="/logout" method="POST">
+            <button type="submit" class="btn btn-ghost btn-sm btn-icon" title="Sign out" aria-label="Sign out">
+              <i class="fa-solid fa-right-from-bracket"></i>
+            </button>
+          </form>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <span class="topbar-title"><%= title %></span>
+        <div class="topbar-actions">
+          <span class="badge badge-accent">
+            <i class="fa-solid fa-coins"></i>
+            <%= (typeof walletBalance !== 'undefined' ? walletBalance.available : 0).toLocaleString() %> credits
+          </span>
+        </div>
+      </header>
+
+      <main class="content">
+  <% } else { %>
+  <main class="content">
+  <% } %>
+      <% if (typeof message !== 'undefined' && message) { %>
+        <div class="alert alert-success" role="status">
+          <i class="fa-solid fa-circle-check alert-icon"></i>
+          <div class="alert-body"><p><%= message %></p></div>
+        </div>
+      <% } %>
+
+      <% if (typeof error !== 'undefined' && error) { %>
+        <div class="alert alert-danger" role="alert">
+          <i class="fa-solid fa-circle-xmark alert-icon"></i>
+          <div class="alert-body"><p><%= error %></p></div>
+        </div>
+      <% } %>

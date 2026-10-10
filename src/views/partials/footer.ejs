@@ -1,0 +1,16 @@
+      <% if (typeof user !== 'undefined' && user) { %>
+      </main>
+      <footer class="px-6 py-4 text-xs text-center" style="color: var(--text-muted)">
+        &copy; <%= new Date().getFullYear() %> <%= appName %>. Google Indexing Workflow.
+      </footer>
+    </div>
+  </div>
+  <% } else { %>
+    </main>
+    <footer class="px-6 py-4 text-xs text-center" style="color: var(--text-muted)">
+      &copy; <%= new Date().getFullYear() %> <%= appName %>. Google Indexing Workflow.
+    </footer>
+  <% } %>
+  <script src="/js/app.js"></script>
+</body>
+</html>
