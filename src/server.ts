@@ -5,7 +5,7 @@ import helmet from 'helmet';
 import compression from 'compression';
 import cookieParser from 'cookie-parser';
 import { env } from './config/env';
-import { sessionRedis } from './lib/redis';
+import { sessionRedis, connectRedis } from './lib/redis';
 import { logger } from './lib/logger';
 import { errorHandler } from './middleware/errorHandler';
 import authRoutes from './routes/auth';
@@ -53,6 +53,14 @@ app.use('/billing', billingRoutes);
 // Error Handler
 app.use(errorHandler);
 
-app.listen(env.PORT, () => {
-  logger.info({ port: env.PORT, env: env.NODE_ENV }, 'Server listening');
+async function start(): Promise<void> {
+  await connectRedis();
+  app.listen(env.PORT, () => {
+    logger.info({ port: env.PORT, env: env.NODE_ENV }, 'Server listening');
+  });
+}
+
+start().catch((err) => {
+  logger.error({ err }, 'Failed to start server');
+  process.exit(1);
 });

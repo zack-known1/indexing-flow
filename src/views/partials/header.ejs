@@ -62,7 +62,7 @@
         </div>
       <% } %>
 
-      <% if (typeof error !== 'undefined' && error) { %>
+      <% if (typeof error === 'string' && error) { %>
         <div class="alert alert-danger" role="alert">
           <i class="fa-solid fa-circle-xmark alert-icon"></i>
           <div class="alert-body"><p><%= error %></p></div>
