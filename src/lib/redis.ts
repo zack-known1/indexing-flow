@@ -98,7 +98,15 @@ if (!env.isProduction) {
 export async function connectRedis(): Promise<void> {
   await Promise.all(
     [redis, sessionRedis, queueRedis].map(async (client) => {
-      if (client.status === 'wait') await client.connect();
+      if (client.status !== 'wait') return;
+      try {
+        await client.connect();
+      } catch (error) {
+        logger.warn(
+          { err: (error as Error).message },
+          'Redis unavailable at startup; continuing and retrying in the background',
+        );
+      }
     }),
   );
 }

@@ -32,7 +32,10 @@
       "Bash(rtk git *)",
       "Bash(node -e \"const ejs=require\\('ejs'\\);const fs=require\\('fs'\\);const dir='src/views';const out=ejs.render\\(fs.readFileSync\\('src/views/error.ejs','utf8'\\),{title:'Error 500',appName:'IndexFlow',error:{status:500,code:'INTERNAL',message:'boom'},user:undefined,filename:'src/views/error.ejs'},{filename:'src/views/error.ejs'}\\);console.log\\(out.match\\(/alert-danger[\\\\s\\\\S]*?<\\\\/div>\\\\s*<\\\\/div>/\\)?.[0]??'no alert'\\);console.log\\(out.includes\\('[object Object]'\\)?'CONTAINS [object Object]':'clean'\\)\")",
       "Bash(echo \"exit=$?\")",
-      "Bash(curl -s -w \"\\\\nGET /nope: %{http_code}\\\\n\" http://localhost:3000/nope)"
+      "Bash(curl -s -w \"\\\\nGET /nope: %{http_code}\\\\n\" http://localhost:3000/nope)",
+      "Bash(git -C C:/Users/mehar/Desktop/indextool ls-files)",
+      "Bash(REDIS_URL=redis://127.0.0.1:6399 timeout 30 npx tsx --env-file=.env src/server.ts)",
+      "Read(//tmp/**)"
     ]
   }
 }
