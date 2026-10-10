@@ -35,7 +35,8 @@
       "Bash(curl -s -w \"\\\\nGET /nope: %{http_code}\\\\n\" http://localhost:3000/nope)",
       "Bash(git -C C:/Users/mehar/Desktop/indextool ls-files)",
       "Bash(REDIS_URL=redis://127.0.0.1:6399 timeout 30 npx tsx --env-file=.env src/server.ts)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(git ls-remote *)"
     ]
   }
 }

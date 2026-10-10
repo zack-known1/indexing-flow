@@ -10,10 +10,9 @@
  *                       wrong for request-path clients (it makes a request hang
  *                       forever instead of failing fast), hence its own client.
  *
- * Availability posture: Redis being down must degrade, not destroy. The rate
- * limiter fails open (documented in middleware/rateLimit.ts), the queue reports
- * unhealthy so the load balancer stops sending traffic, and sessions become
- * unreadable — which logs people out but does not corrupt anything.
+ * Availability posture: Redis being down must degrade, not destroy. The queue
+ * reports unhealthy so the load balancer stops sending traffic, and sessions
+ * become unreadable — which logs people out but does not corrupt anything.
  */
 
 import { Redis, type RedisOptions } from 'ioredis';
@@ -120,16 +119,19 @@ export function isRedisHealthy(): boolean {
 }
 
 export async function pingRedis(timeoutMs = 2000): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
   try {
     const result = await Promise.race([
       redis.ping(),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Redis ping timeout')), timeoutMs),
-      ),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Redis ping timeout')), timeoutMs);
+      }),
     ]);
     return result === 'PONG';
   } catch {
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
